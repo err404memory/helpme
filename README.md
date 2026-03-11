@@ -46,6 +46,21 @@ documentation/tools/helpme/helpme
 
 Or point your own wrapper/alias at it.
 
+## Bootstrap
+
+If you want a private local wrapper plus an env file for your real docs tree:
+
+```bash
+./scripts/bootstrap.sh
+```
+
+That creates:
+
+- `~/.local/bin/helpme-private`
+- `~/.config/helpme-private/env`
+
+Then edit the env file, point it at your actual docs tree, and alias `helpme` to the wrapper if you want `helpme` available globally.
+
 ## Private Overlay
 
 The public repo copy stays generic. If you need remote renderer controls or local machine-specific defaults, keep them outside the repo via environment variables or a private launcher.

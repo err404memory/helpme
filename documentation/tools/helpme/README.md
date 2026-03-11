@@ -37,6 +37,12 @@ From a shell that can see the repo:
 helpme
 ```
 
+To install a private local wrapper plus env template:
+
+```bash
+./scripts/bootstrap.sh
+```
+
 Useful direct commands:
 
 ```bash
