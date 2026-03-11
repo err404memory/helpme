@@ -1,0 +1,34 @@
+site_name: helpme docs
+site_description: Terminal editing shell for a MkDocs reference tree
+site_url: http://127.0.0.1:18101
+
+theme:
+  name: material
+  palette:
+    scheme: slate
+    primary: indigo
+    accent: cyan
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - search.suggest
+    - content.code.copy
+
+plugins:
+  - search
+
+markdown_extensions:
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - admonition
+
+extra_javascript:
+  - javascripts/path-copy.js
+
+extra_css:
+  - stylesheets/path-copy.css
+
+nav:
+  - Home: index.md
+  - helpme shell:
+      - Overview: helpme-shell/index.md

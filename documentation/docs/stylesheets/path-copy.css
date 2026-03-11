@@ -1,0 +1,25 @@
+.path-copy-inline {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+.path-copy-target {
+  white-space: nowrap;
+}
+
+.path-copy-button {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0.2rem 0.45rem;
+}
+
+.path-copy-button:hover {
+  background: rgba(255, 255, 255, 0.14);
+}

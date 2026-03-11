@@ -1,0 +1,15 @@
+services:
+  docs:
+    image: squidfunk/mkdocs-material:latest
+    container_name: docs
+    entrypoint: ["python"]
+    command: ["/docs/tools/mkdocs_live_server.py"]
+    ports:
+      - 18101:8000
+    volumes:
+      - ./documentation:/docs
+    environment:
+      - MKDOCS_CONFIG_FILE=/docs/mkdocs.yml
+      - MKDOCS_DEV_ADDR=0.0.0.0:8000
+      - MKDOCS_WATCH=/docs/docs:/docs/mkdocs.yml
+    restart: unless-stopped

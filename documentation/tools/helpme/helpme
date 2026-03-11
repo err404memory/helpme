@@ -1,0 +1,1401 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+DOCUMENTATION_ROOT="$REPO_ROOT/documentation"
+NAV_HELPER="${HELPME_NAV_HELPER:-$SCRIPT_DIR/helpme_nav.rb}"
+
+DOCS_ROOT="${HELPME_DOCS_ROOT:-$DOCUMENTATION_ROOT/docs}"
+MKDOCS_FILE="${HELPME_MKDOCS_FILE:-$DOCUMENTATION_ROOT/mkdocs.yml}"
+SITE_URL="${HELPME_SITE_URL:-}"
+DEBUG_LOG="${HELPME_DEBUG_LOG:-/tmp/helpme-debug.log}"
+HOMELAB_ROOT="${HELPME_HOMELAB_ROOT:-$REPO_ROOT}"
+DOCS_COMPOSE_FILE="${HELPME_DOCS_COMPOSE_FILE:-$HOMELAB_ROOT/docker-compose.yml}"
+DOCS_RENDER_ADDR="${HELPME_RENDER_ADDR:-127.0.0.1:18101}"
+DOCS_RENDER_LOG="${HELPME_RENDER_LOG:-/tmp/helpme-mkdocs.log}"
+REMOTE_RENDER_HOST="${HELPME_REMOTE_RENDER_HOST:-}"
+REMOTE_HOMELAB_ROOT="${HELPME_REMOTE_HOMELAB_ROOT:-}"
+REMOTE_DOCS_COMPOSE_FILE="${HELPME_REMOTE_DOCS_COMPOSE_FILE:-}"
+
+declare -A NODE_PARENT=()
+declare -A NODE_TYPE=()
+declare -A NODE_TITLE=()
+declare -A NODE_PATH=()
+declare -A NODE_DIR=()
+TREE_IDS=()
+
+have_gum() {
+  command -v gum >/dev/null 2>&1
+}
+
+run_nav_helper() {
+  ruby "$NAV_HELPER" "$@"
+}
+
+debug_log() {
+  [ "${HELPME_DEBUG:-0}" = "1" ] || return 0
+  printf '%s\n' "$*" >> "$DEBUG_LOG"
+}
+
+tty_readable() {
+  [ -r /dev/tty ] && [ -w /dev/tty ]
+}
+
+pick_editor() {
+  if [ -n "${HELPME_EDITOR:-}" ] && command -v "${HELPME_EDITOR}" >/dev/null 2>&1; then
+    printf '%s\n' "$HELPME_EDITOR"
+    return
+  fi
+  if command -v micro >/dev/null 2>&1; then
+    printf '%s\n' "micro"
+    return
+  fi
+  if [ -n "${EDITOR:-}" ] && command -v "${EDITOR}" >/dev/null 2>&1; then
+    printf '%s\n' "$EDITOR"
+    return
+  fi
+  for ed in nvim vim nano vi; do
+    if command -v "$ed" >/dev/null 2>&1; then
+      printf '%s\n' "$ed"
+      return
+    fi
+  done
+  printf '%s\n' "vi"
+}
+
+micro_backup_path() {
+  local path="$1"
+  local encoded="${path#/}"
+  encoded="${encoded//\//%}"
+  printf '%s/.config/micro/backups/%%%s\n' "$HOME" "$encoded"
+}
+
+clear_stale_micro_backup() {
+  local path="$1"
+  local backup
+  backup="$(micro_backup_path "$path")"
+  if [ -f "$backup" ] && ! pgrep -x micro >/dev/null 2>&1; then
+    rm -f "$backup"
+  fi
+}
+
+open_in_editor() {
+  local path="$1"
+  local line="${2:-}"
+  local editor
+  editor="$(_pick_or_default_editor)"
+
+  if [ "$editor" = "micro" ]; then
+    clear_stale_micro_backup "$path"
+  fi
+
+  if [ -n "$line" ]; then
+    case "$editor" in
+      micro)
+        "$editor" "+${line}:1" "$path"
+        return
+        ;;
+      vi|vim|nvim)
+        "$editor" "+${line}" "$path"
+        return
+        ;;
+    esac
+  fi
+
+  "$editor" "$path"
+}
+
+slugify() {
+  local text="$1"
+  text="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g')"
+  if [ -z "$text" ]; then
+    text="untitled"
+  fi
+  printf '%s\n' "$text"
+}
+
+prompt_input() {
+  local prompt="$1"
+  local placeholder="${2:-}"
+  local value=""
+
+  if have_gum; then
+    if [ -n "$placeholder" ]; then
+      value="$(gum input --prompt "$prompt" --placeholder "$placeholder" || true)"
+    else
+      value="$(gum input --prompt "$prompt" || true)"
+    fi
+  elif [ -t 0 ] || tty_readable; then
+    read -r -p "$prompt" value || true
+  fi
+
+  printf '%s\n' "$value"
+}
+
+choose_menu_fallback() {
+  local header="$1"
+  shift
+  local -a options=("$@")
+  local idx answer
+
+  printf '%s\n' "$header" >&2
+  for (( idx=0; idx<${#options[@]}; idx++ )); do
+    printf '%d. %s\n' "$((idx + 1))" "${options[$idx]}" >&2
+  done
+
+  if [ -t 0 ]; then
+    read -r -p "Select number: " answer || return 1
+  elif tty_readable; then
+    read -r -p "Select number: " answer < /dev/tty || return 1
+  else
+    return 1
+  fi
+
+  if [[ "$answer" =~ ^[0-9]+$ ]] && [ "$answer" -ge 1 ] && [ "$answer" -le "${#options[@]}" ]; then
+    printf '%s\n' "${options[$((answer - 1))]}"
+    return 0
+  fi
+
+  return 1
+}
+
+choose_value_menu_fallback() {
+  local delimiter="$1"
+  local header="$2"
+  shift 2
+  local -a entries=("$@")
+  local -a labels=()
+  local -a values=()
+  local entry label value
+  local idx answer
+
+  for entry in "${entries[@]}"; do
+    label="${entry%%"$delimiter"*}"
+    value="${entry#*"$delimiter"}"
+    labels+=("$label")
+    values+=("$value")
+  done
+
+  printf '%s\n' "$header" >&2
+  for (( idx=0; idx<${#labels[@]}; idx++ )); do
+    printf '%d. %s\n' "$((idx + 1))" "${labels[$idx]}" >&2
+  done
+
+  if [ -t 0 ]; then
+    read -r -p "Select number: " answer || return 1
+  elif tty_readable; then
+    read -r -p "Select number: " answer < /dev/tty || return 1
+  else
+    return 1
+  fi
+
+  if [[ "$answer" =~ ^[0-9]+$ ]] && [ "$answer" -ge 1 ] && [ "$answer" -le "${#values[@]}" ]; then
+    printf '%s\n' "${values[$((answer - 1))]}"
+    return 0
+  fi
+
+  return 1
+}
+
+choose_menu() {
+  local header="$1"
+  shift
+  if have_gum; then
+    if printf '%s\n' "$@" | gum choose --header "$header"; then
+      return 0
+    fi
+  fi
+  choose_menu_fallback "$header" "$@"
+}
+
+choose_value_menu() {
+  local delimiter="$1"
+  local header="$2"
+  shift 2
+  if have_gum; then
+    local selection=""
+    if selection="$(printf '%s\n' "$@" | gum choose --header "$header" --label-delimiter="$delimiter")"; then
+      debug_log "choose_value_menu header=[$header] selection=[$selection]"
+      printf '%s\n' "$selection"
+      return 0
+    fi
+  fi
+  local fallback=""
+  if fallback="$(choose_value_menu_fallback "$delimiter" "$header" "$@")"; then
+    debug_log "choose_value_menu_fallback header=[$header] selection=[$fallback]"
+    printf '%s\n' "$fallback"
+    return 0
+  fi
+  return 1
+}
+
+confirm_action() {
+  local prompt="$1"
+  if have_gum; then
+    gum confirm "$prompt"
+    return
+  fi
+  local answer
+  if [ -t 0 ]; then
+    read -r -p "$prompt [y/N] " answer || true
+  elif tty_readable; then
+    read -r -p "$prompt [y/N] " answer < /dev/tty || true
+  fi
+  [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+copy_clipboard() {
+  local value="$1"
+  if command -v wl-copy >/dev/null 2>&1; then
+    printf '%s' "$value" | wl-copy
+    printf 'Copied.\n'
+    return
+  fi
+  if command -v xclip >/dev/null 2>&1; then
+    printf '%s' "$value" | xclip -selection clipboard
+    printf 'Copied.\n'
+    return
+  fi
+  printf '%s\n' "$value"
+}
+
+open_url() {
+  local url="$1"
+  if command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$url" >/dev/null 2>&1 &
+    printf 'Opened: %s\n' "$url"
+    return
+  fi
+  printf '%s\n' "$url"
+}
+
+renderer_url() {
+  printf 'http://%s/\n' "$DOCS_RENDER_ADDR"
+}
+
+renderer_is_up() {
+  curl -fsS --max-time 2 "$(renderer_url)" >/dev/null 2>&1
+}
+
+configured_site_is_up() {
+  load_meta
+  [ -n "${SITE_URL:-}" ] || return 1
+  curl -fsS --max-time 2 "${SITE_URL%/}/" >/dev/null 2>&1
+}
+
+have_remote_renderer_host() {
+  command -v ssh >/dev/null 2>&1 && [ -n "$REMOTE_RENDER_HOST" ] && [ -n "$REMOTE_HOMELAB_ROOT" ]
+}
+
+remote_renderer_exec() {
+  local remote_cmd="$1"
+  ssh -t "$REMOTE_RENDER_HOST" "$remote_cmd"
+}
+
+remote_renderer_status() {
+  local remote_compose_file remote_cmd
+  remote_compose_file="${REMOTE_DOCS_COMPOSE_FILE:-$REMOTE_HOMELAB_ROOT/docker-compose.yml}"
+  remote_cmd="cd '$REMOTE_HOMELAB_ROOT' && docker compose -f '$remote_compose_file' ps docs"
+  remote_renderer_exec "$remote_cmd"
+}
+
+start_renderer_remote() {
+  local remote_compose_file remote_cmd
+  remote_compose_file="${REMOTE_DOCS_COMPOSE_FILE:-$REMOTE_HOMELAB_ROOT/docker-compose.yml}"
+  remote_cmd="cd '$REMOTE_HOMELAB_ROOT' && docker compose -f '$remote_compose_file' up -d docs"
+  remote_renderer_exec "$remote_cmd"
+}
+
+nudge_renderer_local() {
+  command -v docker >/dev/null 2>&1 || return 1
+  docker restart docs >/dev/null 2>&1
+}
+
+remote_path_for_local() {
+  local path="$1"
+  case "$path" in
+    "$MKDOCS_FILE")
+      printf '%s/documentation/mkdocs.yml\n' "$REMOTE_HOMELAB_ROOT"
+      ;;
+    "$DOCS_ROOT"/*)
+      printf '%s/documentation/docs/%s\n' "$REMOTE_HOMELAB_ROOT" "${path#"$DOCS_ROOT"/}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+wait_for_remote_sync() {
+  local path="$1"
+  local remote_path local_hash remote_hash
+  local deadline=$((SECONDS + 15))
+
+  remote_path="$(remote_path_for_local "$path" || true)"
+  [ -n "$remote_path" ] || return 0
+
+  if [ ! -e "$path" ]; then
+    while [ "$SECONDS" -lt "$deadline" ]; do
+      if ssh "$REMOTE_RENDER_HOST" "[ ! -e '$remote_path' ]" >/dev/null 2>&1; then
+        return 0
+      fi
+      sleep 1
+    done
+    return 1
+  fi
+
+  local_hash="$(sha256sum "$path" | awk '{print $1}')"
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    remote_hash="$(ssh "$REMOTE_RENDER_HOST" "if [ -f '$remote_path' ]; then sha256sum '$remote_path' | awk '{print \\$1}'; fi" 2>/dev/null || true)"
+    if [ -n "$remote_hash" ] && [ "$remote_hash" = "$local_hash" ]; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+prepare_remote_renderer_restart() {
+  local path
+  for path in "$@"; do
+    [ -n "${path:-}" ] || continue
+    wait_for_remote_sync "$path" || true
+  done
+}
+
+nudge_renderer_remote() {
+  prepare_remote_renderer_restart "$@"
+  have_remote_renderer_host || return 1
+  ssh "$REMOTE_RENDER_HOST" "docker restart docs >/dev/null 2>&1" >/dev/null 2>&1
+}
+
+nudge_renderer() {
+  return 0
+}
+
+maybe_nudge_renderer_for_path() {
+  local path="$1"
+  case "$path" in
+    "$MKDOCS_FILE"|"$DOCS_ROOT"/*)
+      nudge_renderer "$path" || true
+      ;;
+  esac
+}
+
+start_renderer() {
+  if renderer_is_up; then
+    printf 'Docs renderer already responding at %s\n' "$(renderer_url)"
+    return 0
+  fi
+
+  if command -v docker >/dev/null 2>&1 && [ -f "$DOCS_COMPOSE_FILE" ]; then
+    (
+      cd "$HOMELAB_ROOT"
+      docker compose -f "$DOCS_COMPOSE_FILE" up -d docs
+    )
+    if renderer_is_up; then
+      printf 'Started docs renderer with docker compose at %s\n' "$(renderer_url)"
+      return 0
+    fi
+    printf 'Attempted docker compose start, but renderer is not responding yet.\n' >&2
+    return 1
+  fi
+
+  if command -v mkdocs >/dev/null 2>&1; then
+    nohup mkdocs serve -f "$MKDOCS_FILE" -a "0.0.0.0:${DOCS_RENDER_ADDR##*:}" >"$DOCS_RENDER_LOG" 2>&1 &
+    sleep 1
+    if renderer_is_up; then
+      printf 'Started docs renderer with mkdocs serve at %s\n' "$(renderer_url)"
+      printf 'Log: %s\n' "$DOCS_RENDER_LOG"
+      return 0
+    fi
+    printf 'Attempted mkdocs serve, but renderer is not responding yet. Log: %s\n' "$DOCS_RENDER_LOG" >&2
+    return 1
+  fi
+
+  if have_remote_renderer_host; then
+    printf 'Local docker is unavailable. Attempting renderer start on %s using %s\n' "$REMOTE_RENDER_HOST" "$REMOTE_HOMELAB_ROOT"
+    if start_renderer_remote; then
+      printf 'Requested docs renderer start on %s\n' "$REMOTE_RENDER_HOST"
+      return 0
+    fi
+    printf 'Could not start renderer via %s\n' "$REMOTE_RENDER_HOST" >&2
+    return 1
+  fi
+
+  if configured_site_is_up; then
+    printf 'No local renderer runtime is available on this machine, but the configured docs site is already up at %s\n' "${SITE_URL%/}/" >&2
+    printf 'The docs files and the renderer are expected to point at the same repo checkout.\n' >&2
+    return 1
+  fi
+
+  printf 'Could not start renderer automatically. Neither docker nor mkdocs is available in this shell.\n' >&2
+  return 1
+}
+
+show_renderer_status() {
+  if renderer_is_up; then
+    printf 'Docs renderer is up: %s\n' "$(renderer_url)"
+    return 0
+  fi
+
+  printf 'Docs renderer is not responding at %s\n' "$(renderer_url)"
+  if configured_site_is_up; then
+    printf 'Configured site is up at: %s\n' "${SITE_URL%/}/"
+    printf 'If the browser is stale, reload the page once so the livereload client reconnects.\n'
+  fi
+  if ! command -v docker >/dev/null 2>&1 && have_remote_renderer_host; then
+    printf 'Local docker is unavailable. Renderer control can run on %s with homelab root %s\n' "$REMOTE_RENDER_HOST" "$REMOTE_HOMELAB_ROOT"
+    remote_renderer_status || true
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    printf 'Docker is available. Try starting the docs service.\n'
+  fi
+  if command -v mkdocs >/dev/null 2>&1; then
+    printf 'MkDocs CLI is available. Fallback serve is possible.\n'
+  fi
+}
+
+rel_to_abs() {
+  local rel="$1"
+  printf '%s/%s\n' "$DOCS_ROOT" "$rel"
+}
+
+rendered_url() {
+  local rel="$1"
+  local clean="${SITE_URL%/}"
+  local dir base
+
+  if [ -z "$clean" ]; then
+    printf '%s\n' "$rel"
+    return
+  fi
+
+  if [ "$rel" = "index.md" ]; then
+    printf '%s/\n' "$clean"
+    return
+  fi
+
+  base="$(basename "$rel")"
+  dir="$(dirname "$rel")"
+
+  if [ "$base" = "index.md" ]; then
+    if [ "$dir" = "." ]; then
+      printf '%s/\n' "$clean"
+    else
+      printf '%s/%s/\n' "$clean" "$dir"
+    fi
+    return
+  fi
+
+  printf '%s/%s/%s/\n' "$clean" "$dir" "${base%.md}" | sed 's#/\./#/#g'
+}
+
+heading_anchor() {
+  local text="$1"
+  text="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9 _-]+//g; s/[[:space:]_]+/-/g; s/^-+//; s/-+$//; s/-+/-/g')"
+  printf '%s\n' "$text"
+}
+
+load_meta() {
+  if [ -n "$SITE_URL" ]; then
+    return
+  fi
+  SITE_URL="$(run_nav_helper "$MKDOCS_FILE" meta | awk -F '\t' '$1=="site_url"{print $2}')"
+}
+
+load_tree() {
+  local row_id row_parent row_type row_title row_path row_dir
+  NODE_PARENT=()
+  NODE_TYPE=()
+  NODE_TITLE=()
+  NODE_PATH=()
+  NODE_DIR=()
+  TREE_IDS=()
+
+  while IFS=$'\t' read -r row_id row_parent row_type row_title row_path row_dir; do
+    [ -n "$row_id" ] || continue
+    TREE_IDS+=("$row_id")
+    NODE_PARENT["$row_id"]="$row_parent"
+    NODE_TYPE["$row_id"]="$row_type"
+    NODE_TITLE["$row_id"]="$row_title"
+    NODE_PATH["$row_id"]="$row_path"
+    NODE_DIR["$row_id"]="$row_dir"
+  done < <(run_nav_helper "$MKDOCS_FILE" dump)
+}
+
+child_ids() {
+  local parent="$1"
+  local id
+  for id in "${TREE_IDS[@]}"; do
+    if [ "${NODE_PARENT[$id]}" = "$parent" ]; then
+      printf '%s\n' "$id"
+    fi
+  done
+}
+
+tree_has_id() {
+  local target="${1:-}"
+  local id
+  [ -n "$target" ] || return 1
+  for id in "${TREE_IDS[@]}"; do
+    if [ "$id" = "$target" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+find_id_by_path() {
+  local path="$1"
+  local id
+  for id in "${TREE_IDS[@]}"; do
+    if [ "${NODE_TYPE[$id]}" = "page" ] && [ "${NODE_PATH[$id]}" = "$path" ]; then
+      printf '%s\n' "$id"
+      return
+    fi
+  done
+}
+
+breadcrumb() {
+  local current="$1"
+  local parts=()
+  while [ "$current" != "root" ]; do
+    parts+=("${NODE_TITLE[$current]}")
+    current="${NODE_PARENT[$current]}"
+  done
+
+  if [ "${#parts[@]}" -eq 0 ]; then
+    printf 'helpme docs'
+    return
+  fi
+
+  local out="helpme docs"
+  local idx
+  for (( idx=${#parts[@]}-1 ; idx>=0 ; idx-- )); do
+    out="$out > ${parts[$idx]}"
+  done
+  printf '%s\n' "$out"
+}
+
+group_dir_for_parent() {
+  local parent="$1"
+  if [ "$parent" = "root" ]; then
+    printf '.\n'
+    return
+  fi
+  if [ -n "${NODE_DIR[$parent]:-}" ]; then
+    printf '%s\n' "${NODE_DIR[$parent]}"
+    return
+  fi
+  printf '%s\n' "$(slugify "${NODE_TITLE[$parent]}")"
+}
+
+write_markdown_stub() {
+  local path="$1"
+  local title="$2"
+  mkdir -p "$(dirname "$path")"
+  {
+    printf '# %s\n\n' "$title"
+    printf 'Add your notes here.\n'
+  } > "$path"
+}
+
+page_is_overview() {
+  local id="$1"
+  [ "$(basename "${NODE_PATH[$id]}")" = "index.md" ]
+}
+
+page_heading_entries() {
+  local abs="$1"
+  local line content marks title level indent
+
+  while IFS=: read -r line content; do
+    [ -n "$line" ] || continue
+    marks="${content%% *}"
+    title="${content#"$marks "}"
+    [ "$title" != "$content" ] || continue
+    level="${#marks}"
+    if [ "$level" -eq 1 ] && [ "$line" -eq 1 ]; then
+      continue
+    fi
+    indent="$(printf '%*s' $((level - 2 < 0 ? 0 : level - 2)) '')"
+    printf '%s[H%s] %s\t%s\n' "$indent" "$level" "$title" "$line"
+  done < <(rg -n '^#{1,6} ' "$abs" || true)
+}
+
+page_has_headings() {
+  local abs="$1"
+  local heading
+  heading="$(page_heading_entries "$abs" | head -n 1 || true)"
+  [ -n "$heading" ]
+}
+
+group_overview_id() {
+  local group_id="$1"
+  local child
+  while IFS= read -r child; do
+    if [ "${NODE_TYPE[$child]}" = "page" ] && page_is_overview "$child"; then
+      printf '%s\n' "$child"
+      return
+    fi
+  done < <(child_ids "$group_id")
+}
+
+choose_group_destination() {
+  local header="${1:-Move to which section?}"
+  local exclude_id="${2:-}"
+  local entries=("[root] Top level	root")
+  local id label current skip
+
+  for id in "${TREE_IDS[@]}"; do
+    if [ "${NODE_TYPE[$id]}" = "group" ]; then
+      if [ -n "$exclude_id" ] && [ "$id" = "$exclude_id" ]; then
+        continue
+      fi
+      if [ -n "$exclude_id" ]; then
+        current="${NODE_PARENT[$id]}"
+        skip="0"
+        while [ "$current" != "root" ]; do
+          if [ "$current" = "$exclude_id" ]; then
+            skip="1"
+            break
+          fi
+          current="${NODE_PARENT[$current]}"
+        done
+        [ "$skip" = "1" ] && continue
+      fi
+      label="[group] $(breadcrumb "$id")"
+      entries+=("$label	$id")
+    fi
+  done
+
+  choose_value_menu "	" "$header" "${entries[@]}"
+}
+
+choose_config_file() {
+  local labels=(
+    "MkDocs nav config"
+    "Docs home page"
+    "helpme shell docs page"
+    "helpme script"
+    "helpme nav helper"
+    "helpme wrapper"
+    "Alias file"
+    "Questions shell"
+    "Back"
+    "Done"
+  )
+
+  local choice path action
+  while true; do
+    choice="$(choose_menu "Config files" "${labels[@]}")" || return 0
+    case "$choice" in
+      "MkDocs nav config") path="$MKDOCS_FILE" ;;
+      "Docs home page") path="$DOCS_ROOT/index.md" ;;
+      "helpme shell docs page") path="$DOCS_ROOT/helpme-shell/index.md" ;;
+      "helpme script") path="$SCRIPT_DIR/helpme" ;;
+      "helpme nav helper") path="$NAV_HELPER" ;;
+      "helpme wrapper") path="$HOME/.local/bin/helpme-private" ;;
+      "Alias file") path="$HOME/.bashrc.d/30-aliases.sh" ;;
+      "Questions shell") path="$HOME/.bashrc.d/35-questions.sh" ;;
+      "Back") return 0 ;;
+      "Done") exit 0 ;;
+    esac
+
+    "$(_pick_or_default_editor)" "$path"
+    maybe_nudge_renderer_for_path "$path"
+    while true; do
+      action="$(choose_menu "Config: $(basename "$path")" "Copy source path" "Back to config files" "Back to docs tree" "Done")" || return 0
+      case "$action" in
+        "Copy source path") copy_clipboard "$path" ;;
+        "Back to config files") break ;;
+        "Back to docs tree") return 0 ;;
+        "Done") exit 0 ;;
+      esac
+    done
+  done
+}
+
+renderer_menu() {
+  local choice
+  while true; do
+    choice="$(choose_menu "Docs renderer" \
+      "Start renderer" \
+      "Renderer status" \
+      "Open renderer home" \
+      "Open configured site URL" \
+      "Back" \
+      "Done")" || return 0
+    case "$choice" in
+      "Start renderer") start_renderer ;;
+      "Renderer status") show_renderer_status ;;
+      "Open renderer home") open_url "$(renderer_url)" ;;
+      "Open configured site URL") load_meta; open_url "${SITE_URL%/}/" ;;
+      "Back") return 0 ;;
+      "Done") exit 0 ;;
+    esac
+  done
+}
+
+_pick_or_default_editor() {
+  pick_editor
+}
+
+show_help_page() {
+  local id
+  load_tree
+  id="$(find_id_by_path "helpme-shell/index.md" || true)"
+  if [ -n "$id" ]; then
+    choose_page_target "$id"
+  else
+    open_in_editor "$DOCS_ROOT/helpme-shell/index.md"
+  fi
+}
+
+search_docs() {
+  local pattern="${1:-}"
+  if [ -z "$pattern" ]; then
+    pattern="$(prompt_input "Search: " "tmux")"
+  fi
+  if [ -z "$pattern" ]; then
+    return 0
+  fi
+
+  if ! have_gum || ! [ -t 0 ] || ! [ -t 1 ]; then
+    rg -n "$pattern" "$DOCS_ROOT" -g '*.md' || true
+    return 0
+  fi
+
+  local results=()
+  local line rel file line_no excerpt
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    file="${line%%:*}"
+    line_no="${line#*:}"
+    line_no="${line_no%%:*}"
+    excerpt="${line#*:*:}"
+    rel="${file#$DOCS_ROOT/}"
+    results+=("${rel}:${line_no} :: ${excerpt}")
+  done < <(rg -n "$pattern" "$DOCS_ROOT" -g '*.md' || true)
+
+  if [ "${#results[@]}" -eq 0 ]; then
+    printf 'No matches for: %s\n' "$pattern"
+    return 0
+  fi
+
+  local choice relpath id
+  choice="$(choose_menu "Search results" "${results[@]}" "Back")" || return 0
+  [ "$choice" = "Back" ] && return 0
+  relpath="${choice%%:*}"
+
+  load_tree
+  id="$(find_id_by_path "$relpath" || true)"
+  if [ -n "$id" ]; then
+    choose_page_target "$id"
+    return 0
+  fi
+
+  open_in_editor "$(rel_to_abs "$relpath")"
+}
+
+rename_group() {
+  local id="$1"
+  local current_title="${NODE_TITLE[$id]}"
+  local new_title
+  new_title="$(prompt_input "Rename group: " "$current_title")"
+  if [ -z "$new_title" ]; then
+    return 0
+  fi
+  run_nav_helper "$MKDOCS_FILE" rename "$id" "$new_title"
+  nudge_renderer "$MKDOCS_FILE" || true
+}
+
+move_group() {
+  local id="$1"
+  local dest_parent
+  dest_parent="$(choose_group_destination "Move group to which section?" "$id")" || return 0
+  run_nav_helper "$MKDOCS_FILE" move-item "$id" "$dest_parent"
+  nudge_renderer "$MKDOCS_FILE" || true
+}
+
+delete_group() {
+  local id="$1"
+  local group_dir="${NODE_DIR[$id]}"
+  local abs_dir
+
+  if [ -z "$group_dir" ] || [ "$group_dir" = "." ]; then
+    printf 'Delete is only supported for groups with a dedicated docs directory in this MVP.\n'
+    return 1
+  fi
+
+  abs_dir="$(rel_to_abs "$group_dir")"
+  if [ ! -d "$abs_dir" ]; then
+    printf 'Expected directory not found: %s\n' "$abs_dir" >&2
+    return 1
+  fi
+
+  confirm_action "Delete group '${NODE_TITLE[$id]}' and its docs directory?" || return 0
+  rm -rf "$abs_dir"
+  run_nav_helper "$MKDOCS_FILE" delete "$id"
+  nudge_renderer "$MKDOCS_FILE" || true
+  printf 'Deleted group: %s\n' "${NODE_TITLE[$id]}"
+}
+
+create_page_in_parent() {
+  local parent="$1"
+  local title slug base_dir relpath abs
+
+  title="$(prompt_input "New page title: " "New Page")"
+  [ -n "$title" ] || return 0
+  slug="$(slugify "$title")"
+  base_dir="$(group_dir_for_parent "$parent")"
+  if [ "$base_dir" = "." ]; then
+    relpath="${slug}.md"
+  else
+    relpath="${base_dir}/${slug}.md"
+  fi
+  abs="$(rel_to_abs "$relpath")"
+
+  if [ -e "$abs" ]; then
+    printf 'File already exists: %s\n' "$abs" >&2
+    return 1
+  fi
+
+  write_markdown_stub "$abs" "$title"
+  run_nav_helper "$MKDOCS_FILE" add-page "$parent" "$title" "$relpath"
+  nudge_renderer "$MKDOCS_FILE" "$abs" || true
+  load_tree
+  local id
+  id="$(find_id_by_path "$relpath" || true)"
+  if [ -n "$id" ]; then
+    choose_page_target "$id"
+  else
+    open_in_editor "$abs"
+  fi
+}
+
+create_group_in_parent() {
+  local parent="$1"
+  local title slug base_dir relindex absindex
+
+  title="$(prompt_input "New group title: " "New Section")"
+  [ -n "$title" ] || return 0
+  slug="$(slugify "$title")"
+  base_dir="$(group_dir_for_parent "$parent")"
+  if [ "$base_dir" = "." ]; then
+    relindex="${slug}/index.md"
+  else
+    relindex="${base_dir}/${slug}/index.md"
+  fi
+  absindex="$(rel_to_abs "$relindex")"
+
+  if [ -e "$absindex" ]; then
+    printf 'Group overview already exists: %s\n' "$absindex" >&2
+    return 1
+  fi
+
+  write_markdown_stub "$absindex" "$title"
+  run_nav_helper "$MKDOCS_FILE" add-group "$parent" "$title" "$relindex"
+  nudge_renderer "$MKDOCS_FILE" "$absindex" || true
+  open_in_editor "$absindex"
+  nudge_renderer "$MKDOCS_FILE" "$absindex" || true
+}
+
+rename_page() {
+  local id="$1"
+  local old_rel="${NODE_PATH[$id]}"
+  local old_abs
+  local old_title="${NODE_TITLE[$id]}"
+  local new_title new_slug new_rel new_abs dir
+  old_abs="$(rel_to_abs "$old_rel")"
+
+  new_title="$(prompt_input "Rename page: " "$old_title")"
+  [ -n "$new_title" ] || return 0
+
+  if page_is_overview "$id"; then
+    run_nav_helper "$MKDOCS_FILE" rename "$id" "$new_title"
+    nudge_renderer "$MKDOCS_FILE" "$old_abs" || true
+    return 0
+  fi
+
+  dir="$(dirname "$old_rel")"
+  new_slug="$(slugify "$new_title")"
+  if [ "$dir" = "." ]; then
+    new_rel="${new_slug}.md"
+  else
+    new_rel="${dir}/${new_slug}.md"
+  fi
+  new_abs="$(rel_to_abs "$new_rel")"
+
+  if [ "$new_abs" != "$old_abs" ] && [ -e "$new_abs" ]; then
+    printf 'Target already exists: %s\n' "$new_abs" >&2
+    return 1
+  fi
+
+  mv "$old_abs" "$new_abs"
+  run_nav_helper "$MKDOCS_FILE" set-page "$id" "$new_title" "$new_rel"
+  nudge_renderer "$MKDOCS_FILE" "$new_abs" || true
+}
+
+move_page() {
+  local id="$1"
+  local old_rel="${NODE_PATH[$id]}"
+  local old_abs
+  local dest_parent dest_dir title slug new_rel new_abs
+  old_abs="$(rel_to_abs "$old_rel")"
+
+  if page_is_overview "$id"; then
+    printf 'Moving overview pages is not supported in this MVP.\n'
+    return 0
+  fi
+
+  dest_parent="$(choose_group_destination "Move page to which section?")" || return 0
+  dest_dir="$(group_dir_for_parent "$dest_parent")"
+  title="$(prompt_input "Page title after move: " "${NODE_TITLE[$id]}")"
+  [ -n "$title" ] || return 0
+  slug="$(slugify "$title")"
+
+  if [ "$dest_dir" = "." ]; then
+    new_rel="${slug}.md"
+  else
+    new_rel="${dest_dir}/${slug}.md"
+  fi
+  new_abs="$(rel_to_abs "$new_rel")"
+
+  if [ -e "$new_abs" ]; then
+    printf 'Target already exists: %s\n' "$new_abs" >&2
+    return 1
+  fi
+
+  mkdir -p "$(dirname "$new_abs")"
+  mv "$old_abs" "$new_abs"
+  run_nav_helper "$MKDOCS_FILE" set-page "$id" "$title" "$new_rel"
+  run_nav_helper "$MKDOCS_FILE" move-item "$id" "$dest_parent"
+  nudge_renderer "$MKDOCS_FILE" "$new_abs" || true
+}
+
+duplicate_page() {
+  local id="$1"
+  local src_rel="${NODE_PATH[$id]}"
+  local src_abs
+  local dest_parent dest_dir title slug new_rel new_abs
+  src_abs="$(rel_to_abs "$src_rel")"
+
+  if page_is_overview "$id"; then
+    printf 'Duplicating overview pages is not supported in this MVP.\n'
+    return 0
+  fi
+
+  dest_parent="$(choose_group_destination "Copy page to which section?")" || return 0
+  dest_dir="$(group_dir_for_parent "$dest_parent")"
+  title="$(prompt_input "Copied page title: " "${NODE_TITLE[$id]} Copy")"
+  [ -n "$title" ] || return 0
+  slug="$(slugify "$title")"
+
+  if [ "$dest_dir" = "." ]; then
+    new_rel="${slug}.md"
+  else
+    new_rel="${dest_dir}/${slug}.md"
+  fi
+  new_abs="$(rel_to_abs "$new_rel")"
+
+  if [ -e "$new_abs" ]; then
+    printf 'Target already exists: %s\n' "$new_abs" >&2
+    return 1
+  fi
+
+  mkdir -p "$(dirname "$new_abs")"
+  cp "$src_abs" "$new_abs"
+  run_nav_helper "$MKDOCS_FILE" add-page "$dest_parent" "$title" "$new_rel"
+  nudge_renderer "$MKDOCS_FILE" "$new_abs" || true
+}
+
+delete_page() {
+  local id="$1"
+  local rel="${NODE_PATH[$id]}"
+  local abs
+  abs="$(rel_to_abs "$rel")"
+
+  if page_is_overview "$id"; then
+    printf 'Deleting overview pages is not supported in this MVP.\n'
+    return 0
+  fi
+
+  confirm_action "Delete page '${NODE_TITLE[$id]}'?" || return 0
+  rm -f "$abs"
+  run_nav_helper "$MKDOCS_FILE" delete "$id"
+  nudge_renderer "$MKDOCS_FILE" || true
+  printf 'Deleted: %s\n' "$rel"
+}
+
+handle_group_actions() {
+  local id="$1"
+  local overview_id action parent_after
+
+  while true; do
+    load_tree
+    if ! tree_has_id "${id:-}"; then
+      debug_log "handle_group_actions invalid id=[$id]"
+      CURRENT_PARENT="root"
+      return 0
+    fi
+
+    debug_log "handle_group_actions id=[$id] title=[${NODE_TITLE[$id]}]"
+    overview_id="$(group_overview_id "$id" || true)"
+    if [ -n "$overview_id" ]; then
+      action="$(choose_menu "Section: ${NODE_TITLE[$id]}" \
+        "Browse section" \
+        "Edit overview page" \
+        "New page here" \
+        "New subgroup here" \
+        "Rename this group" \
+        "Move this group" \
+        "Delete this group" \
+        "Back" \
+        "Done")" || return 0
+    else
+      action="$(choose_menu "Section: ${NODE_TITLE[$id]}" \
+        "Browse section" \
+        "New page here" \
+        "New subgroup here" \
+        "Rename this group" \
+        "Move this group" \
+        "Delete this group" \
+        "Back" \
+        "Done")" || return 0
+    fi
+
+    case "$action" in
+      "Browse section")
+        CURRENT_PARENT="$id"
+        return 0
+        ;;
+      "Edit overview page")
+        choose_page_target "$overview_id"
+        ;;
+      "New page here")
+        CURRENT_PARENT="$id"
+        create_page_in_parent "$id"
+        ;;
+      "New subgroup here")
+        CURRENT_PARENT="$id"
+        create_group_in_parent "$id"
+        ;;
+      "Rename this group")
+        rename_group "$id"
+        ;;
+      "Move this group")
+        parent_after="${NODE_PARENT[$id]}"
+        move_group "$id"
+        CURRENT_PARENT="$parent_after"
+        return 0
+        ;;
+      "Delete this group")
+        parent_after="${NODE_PARENT[$id]}"
+        delete_group "$id"
+        CURRENT_PARENT="$parent_after"
+        return 0
+        ;;
+      "Back")
+        return 0
+        ;;
+      "Done")
+        exit 0
+        ;;
+    esac
+  done
+}
+
+choose_page_target() {
+  local id="$1"
+  local path abs url choice line
+
+  path="${NODE_PATH[$id]}"
+  abs="$(rel_to_abs "$path")"
+  url="$(rendered_url "$path")"
+
+  if ! page_has_headings "$abs"; then
+    handle_page "$id"
+    return 0
+  fi
+
+  local -a entries=(
+    "Edit from top	top"
+  )
+
+  while IFS= read -r choice; do
+    entries+=("$choice")
+  done < <(page_heading_entries "$abs")
+
+  entries+=(
+    "Open rendered page	url"
+    "Copy source path	path"
+    "Copy rendered URL	page-url"
+    "Back	back"
+    "Done	done"
+  )
+
+  choice="$(choose_value_menu "	" "Page: ${NODE_TITLE[$id]}" "${entries[@]}")" || return 0
+
+  case "$choice" in
+    top) handle_page "$id" ;;
+    url) open_url "$url" ;;
+    path) copy_clipboard "$abs" ;;
+    page-url) copy_clipboard "$url" ;;
+    back) return 0 ;;
+    done) exit 0 ;;
+    *)
+      line="$choice"
+      handle_page "$id" "$line"
+      ;;
+  esac
+}
+
+handle_page() {
+  local id="$1"
+  local start_line="${2:-}"
+  local path abs url action
+
+  load_meta
+  path="${NODE_PATH[$id]}"
+  abs="$(rel_to_abs "$path")"
+
+  open_in_editor "$abs" "$start_line"
+  nudge_renderer "$abs" || true
+
+  while true; do
+    load_tree
+    id="$(find_id_by_path "$path" || true)"
+    if [ -z "$id" ]; then
+      return 0
+    fi
+
+    url="$(rendered_url "$path")"
+    if page_is_overview "$id"; then
+      action="$(choose_menu "After editing ${NODE_TITLE[$id]}" \
+        "Return to current section" \
+        "Back to top" \
+        "Jump to heading" \
+        "Open rendered page" \
+        "Copy source path" \
+        "Copy rendered URL" \
+        "Rename page title" \
+        "Done")" || return 0
+    else
+      action="$(choose_menu "After editing ${NODE_TITLE[$id]}" \
+        "Return to current section" \
+        "Back to top" \
+        "Jump to heading" \
+        "Open rendered page" \
+        "Copy source path" \
+        "Copy rendered URL" \
+        "Rename page" \
+        "Move page" \
+        "Copy page" \
+        "Delete page" \
+        "Done")" || return 0
+    fi
+
+    case "$action" in
+      "Return to current section") return 0 ;;
+      "Back to top") CURRENT_PARENT="root"; return 0 ;;
+      "Jump to heading")
+        choose_page_target "$id"
+        return 0
+        ;;
+      "Open rendered page") open_url "$url" ;;
+      "Copy source path") copy_clipboard "$abs" ;;
+      "Copy rendered URL") copy_clipboard "$url" ;;
+      "Rename page title"|"Rename page")
+        rename_page "$id"
+        path="${NODE_PATH[$id]}"
+        abs="$(rel_to_abs "$path")"
+        ;;
+      "Move page")
+        move_page "$id"
+        return 0
+        ;;
+      "Copy page")
+        duplicate_page "$id"
+        ;;
+      "Delete page")
+        delete_page "$id"
+        return 0
+        ;;
+      "Done") exit 0 ;;
+    esac
+  done
+}
+
+show_usage() {
+  cat <<'EOF'
+helpme
+  Open the MkDocs-backed helpme editor shell.
+
+helpme menu
+helpme docs
+helpme list
+  Open the interactive docs tree.
+
+helpme config
+  Open the config files menu.
+
+helpme renderer
+  Open docs renderer controls.
+
+helpme start renderer
+helpme status renderer
+  Direct renderer control shortcuts.
+
+helpme grep <pattern>
+  Search the docs tree and jump into a matching page.
+
+helpme path
+  Print the docs root path.
+
+helpme --help
+  Show this help text.
+EOF
+}
+
+CURRENT_PARENT="root"
+
+main_loop() {
+  local choice id label
+  local children entries header
+
+  while true; do
+    load_tree
+    header="$(breadcrumb "$CURRENT_PARENT")"
+    mapfile -t children < <(child_ids "$CURRENT_PARENT")
+    entries=()
+
+    for id in "${children[@]}"; do
+      if [ "${NODE_TYPE[$id]}" = "group" ]; then
+        label="[group] ${NODE_TITLE[$id]}"
+      else
+        label="[page] ${NODE_TITLE[$id]} :: ${NODE_PATH[$id]}"
+      fi
+      entries+=("$label	$id")
+    done
+
+    entries+=("New page here	action:new-page" "New subgroup here	action:new-group")
+    if [ "$CURRENT_PARENT" != "root" ]; then
+      entries+=(
+        "Edit overview page	action:edit-overview"
+        "Rename this group	action:rename-group"
+        "Move this group	action:move-group"
+        "Delete this group	action:delete-group"
+        "Back	action:back"
+      )
+    fi
+    if [ "$CURRENT_PARENT" = "root" ]; then
+      entries+=(
+        "Config files	action:config"
+        "Docs renderer	action:renderer"
+        "Search docs	action:search"
+        "Open docs home in browser	action:open-home"
+        "helpme shell guide	action:guide"
+      )
+    fi
+    entries+=("Done	action:done")
+
+    choice="$(choose_value_menu "	" "$header" "${entries[@]}")" || exit 0
+    debug_log "main_loop current_parent=[$CURRENT_PARENT] choice=[$choice]"
+
+    if tree_has_id "$choice"; then
+      debug_log "main_loop choice is tree id [$choice] type=[${NODE_TYPE[$choice]}]"
+      if [ "${NODE_TYPE[$choice]}" = "group" ]; then
+        handle_group_actions "$choice"
+      else
+        choose_page_target "$choice"
+      fi
+      continue
+    fi
+
+    debug_log "main_loop choice treated as action [$choice]"
+    case "$choice" in
+      "action:new-page") create_page_in_parent "$CURRENT_PARENT" ;;
+      "action:new-group") create_group_in_parent "$CURRENT_PARENT" ;;
+      "action:edit-overview")
+        id="$(group_overview_id "$CURRENT_PARENT" || true)"
+        if [ -n "$id" ]; then
+          choose_page_target "$id"
+        else
+          printf 'This section does not have an overview page.\n'
+        fi
+        ;;
+      "action:rename-group") rename_group "$CURRENT_PARENT" ;;
+      "action:move-group")
+        id="$CURRENT_PARENT"
+        CURRENT_PARENT="${NODE_PARENT[$CURRENT_PARENT]}"
+        move_group "$id"
+        ;;
+      "action:delete-group")
+        id="$CURRENT_PARENT"
+        CURRENT_PARENT="${NODE_PARENT[$CURRENT_PARENT]}"
+        delete_group "$id"
+        ;;
+      "action:back") CURRENT_PARENT="${NODE_PARENT[$CURRENT_PARENT]}" ;;
+      "action:config") choose_config_file ;;
+      "action:renderer") renderer_menu ;;
+      "action:search") search_docs ;;
+      "action:open-home") load_meta; open_url "${SITE_URL%/}/" ;;
+      "action:guide") show_help_page ;;
+      "action:done") exit 0 ;;
+    esac
+  done
+}
+
+if [ ! -r "$NAV_HELPER" ]; then
+  printf 'helpme nav helper is not readable: %s\n' "$NAV_HELPER" >&2
+  exit 1
+fi
+
+load_meta
+
+case "${1:-}" in
+  ""|menu|docs|list)
+    main_loop
+    ;;
+  config)
+    choose_config_file
+    ;;
+  start)
+    if [ "${2:-}" = "renderer" ]; then
+      start_renderer
+    else
+      printf 'Unknown command: %s %s\n' "${1:-}" "${2:-}" >&2
+      show_usage >&2
+      exit 1
+    fi
+    ;;
+  status)
+    if [ "${2:-}" = "renderer" ]; then
+      show_renderer_status
+    else
+      printf 'Unknown command: %s %s\n' "${1:-}" "${2:-}" >&2
+      show_usage >&2
+      exit 1
+    fi
+    ;;
+  renderer)
+    renderer_menu
+    ;;
+  grep|search)
+    search_docs "${2:-}"
+    ;;
+  path)
+    printf '%s\n' "$DOCS_ROOT"
+    ;;
+  --help|-h|help)
+    show_usage
+    ;;
+  *)
+    printf 'Unknown command: %s\n' "${1:-}" >&2
+    show_usage >&2
+    exit 1
+    ;;
+esac
