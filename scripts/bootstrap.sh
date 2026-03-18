@@ -3,8 +3,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PUBLIC_BIN="$REPO_ROOT/documentation/tools/helpme/helpme"
-INSTALL_BIN="${HELPME_INSTALL_BIN:-$HOME/.local/bin/helpme-private}"
-PRIVATE_ENV_FILE="${HELPME_PRIVATE_ENV_FILE:-$HOME/.config/helpme-private/env}"
+INSTALL_BIN="${HELPME_INSTALL_BIN:-${HELPME_LOCAL_BIN:-$HOME/.local/bin/helpme-local}}"
+LOCAL_ENV_FILE="${HELPME_LOCAL_ENV_FILE:-$HOME/.config/helpme-local/env}"
 
 ensure_dir() {
   mkdir -p "$1"
@@ -16,22 +16,22 @@ write_wrapper() {
 set -euo pipefail
 
 PUBLIC_HELPME="\${HELPME_PUBLIC_BIN:-$PUBLIC_BIN}"
-PRIVATE_ENV_FILE="\${HELPME_PRIVATE_ENV_FILE:-$PRIVATE_ENV_FILE}"
+LOCAL_ENV_FILE="\${HELPME_LOCAL_ENV_FILE:-$LOCAL_ENV_FILE}"
 
 if [ ! -r "\$PUBLIC_HELPME" ]; then
   echo "Public helpme not found or not readable: \$PUBLIC_HELPME" >&2
   exit 1
 fi
 
-if [ -f "\$PRIVATE_ENV_FILE" ]; then
-  mode="\$(stat -c '%a' "\$PRIVATE_ENV_FILE" 2>/dev/null || true)"
+if [ -f "\$LOCAL_ENV_FILE" ]; then
+  mode="\$(stat -c '%a' "\$LOCAL_ENV_FILE" 2>/dev/null || true)"
   if [ -n "\$mode" ] && [ "\$mode" -gt 600 ]; then
-    echo "Refusing to load \$PRIVATE_ENV_FILE (permissions too open: \$mode)." >&2
-    echo "Run: chmod 600 \$PRIVATE_ENV_FILE" >&2
+    echo "Refusing to load \$LOCAL_ENV_FILE (permissions too open: \$mode)." >&2
+    echo "Run: chmod 600 \$LOCAL_ENV_FILE" >&2
     exit 1
   fi
   set -a
-  . "\$PRIVATE_ENV_FILE"
+  . "\$LOCAL_ENV_FILE"
   set +a
 fi
 
@@ -42,12 +42,12 @@ EOF
 }
 
 write_env_template() {
-  if [ -e "$PRIVATE_ENV_FILE" ]; then
+  if [ -e "$LOCAL_ENV_FILE" ]; then
     return 0
   fi
 
-  cat >"$PRIVATE_ENV_FILE" <<'EOF'
-# Private helpme overlay defaults
+  cat >"$LOCAL_ENV_FILE" <<'EOF'
+# Local helpme defaults
 
 # Path to public helpme script
 # HELPME_PUBLIC_BIN="$HOME/dev/helpme/documentation/tools/helpme/helpme"
@@ -68,17 +68,17 @@ write_env_template() {
 # HELPME_EDITOR="micro"
 EOF
 
-  chmod 600 "$PRIVATE_ENV_FILE"
+  chmod 600 "$LOCAL_ENV_FILE"
 }
 
 show_next_steps() {
   cat <<EOF
 Installed:
-  wrapper: $INSTALL_BIN
-  private env: $PRIVATE_ENV_FILE
+  launcher: $INSTALL_BIN
+  local env: $LOCAL_ENV_FILE
 
 Next steps:
-  1. Edit $PRIVATE_ENV_FILE
+  1. Edit $LOCAL_ENV_FILE
   2. Add this to your shell if needed:
      alias helpme='$INSTALL_BIN'
   3. Start the docs renderer:
@@ -89,7 +89,7 @@ EOF
 
 main() {
   ensure_dir "$(dirname "$INSTALL_BIN")"
-  ensure_dir "$(dirname "$PRIVATE_ENV_FILE")"
+  ensure_dir "$(dirname "$LOCAL_ENV_FILE")"
   write_wrapper
   write_env_template
   show_next_steps

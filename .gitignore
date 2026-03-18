@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+.directory
+.public-safety-local-patterns

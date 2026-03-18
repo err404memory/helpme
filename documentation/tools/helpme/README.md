@@ -37,7 +37,7 @@ From a shell that can see the repo:
 helpme
 ```
 
-To install a private local wrapper plus env template:
+To install a local launcher plus env template:
 
 ```bash
 ./scripts/bootstrap.sh
@@ -56,23 +56,23 @@ helpme grep tmux
 helpme path
 ```
 
-## Private Overlay
+## Local Customization
 
 The repo copy is intended to stay generic.
 
-If you need host-specific renderer settings, keep them outside the repo in your local wrapper or private env file. The default local wrapper path used in this setup is:
+If you need host-specific renderer settings, keep them outside the repo in your local launcher or env file. The default local launcher path used in this setup is:
 
 ```text
-~/.local/bin/helpme-private
+~/.local/bin/helpme-local
 ```
 
-That wrapper can load:
+That launcher can load:
 
 ```text
-~/.config/helpme-private/env
+~/.config/helpme-local/env
 ```
 
-Example private values:
+Example local values:
 
 ```bash
 HELPME_REMOTE_RENDER_HOST=your-user@your-render-host
@@ -87,5 +87,6 @@ The docs service uses `documentation/tools/mkdocs_live_server.py` instead of the
 
 ## Notes
 
-- `question` stays separate for now.
+- `question` stays separate by design.
+- The sister shell for fast capture and triage now lives at `documentation/tools/question/question`.
 - The `pre-mvp-helpme` docs area is a stash of older topic notes that can be integrated gradually.

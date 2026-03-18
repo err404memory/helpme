@@ -1,0 +1,512 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+QUESTION_FILE="${QUESTION_FILE:-$HOME/.config/question/questions.md}"
+QUESTION_DEFAULT_STATE="${QUESTION_DEFAULT_STATE:-open}"
+QUESTION_MENU_ON_EMPTY="${QUESTION_MENU_ON_EMPTY:-1}"
+QUESTION_EDITOR_DEFAULT="${QUESTION_EDITOR:-}"
+
+have_gum() {
+  command -v gum >/dev/null 2>&1
+}
+
+tty_readable() {
+  [ -r /dev/tty ] && [ -w /dev/tty ]
+}
+
+pick_editor() {
+  if [ -n "$QUESTION_EDITOR_DEFAULT" ] && command -v "$QUESTION_EDITOR_DEFAULT" >/dev/null 2>&1; then
+    printf '%s\n' "$QUESTION_EDITOR_DEFAULT"
+    return
+  fi
+  if command -v micro >/dev/null 2>&1; then
+    printf '%s\n' "micro"
+    return
+  fi
+  if [ -n "${EDITOR:-}" ] && command -v "$EDITOR" >/dev/null 2>&1; then
+    printf '%s\n' "$EDITOR"
+    return
+  fi
+  for ed in nano vim vi; do
+    if command -v "$ed" >/dev/null 2>&1; then
+      printf '%s\n' "$ed"
+      return
+    fi
+  done
+  printf '%s\n' "vi"
+}
+
+open_in_editor() {
+  local path="$1"
+  local line="${2:-}"
+  local editor
+  editor="$(pick_editor)"
+
+  if [ -n "$line" ]; then
+    case "$editor" in
+      micro)
+        "$editor" "+${line}:1" "$path"
+        return
+        ;;
+      vi|vim|nvim)
+        "$editor" "+${line}" "$path"
+        return
+        ;;
+    esac
+  fi
+
+  "$editor" "$path"
+}
+
+ensure_store() {
+  mkdir -p "$(dirname "$QUESTION_FILE")"
+  [ -f "$QUESTION_FILE" ] || touch "$QUESTION_FILE"
+}
+
+today_heading() {
+  date +%F
+}
+
+now_stamp() {
+  date +"%Y-%m-%d %H:%M"
+}
+
+normalize_state() {
+  local state="${1:-$QUESTION_DEFAULT_STATE}"
+  case "$state" in
+    open|next|waiting|parked|done|dropped) printf '%s\n' "$state" ;;
+    *) printf '%s\n' "$QUESTION_DEFAULT_STATE" ;;
+  esac
+}
+
+normalize_tags() {
+  local raw="${1:-}"
+  local token out=""
+  raw="${raw//,/ }"
+  for token in $raw; do
+    token="${token#\#}"
+    token="$(printf '%s' "$token" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]+/-/g; s/^-+//; s/-+$//; s/-+/-/g')"
+    [ -n "$token" ] || continue
+    out="${out} #$token"
+  done
+  printf '%s\n' "${out# }"
+}
+
+prompt_input() {
+  local prompt="$1"
+  local placeholder="${2:-}"
+  local value=""
+
+  if have_gum; then
+    if [ -n "$placeholder" ]; then
+      value="$(gum input --prompt "$prompt" --placeholder "$placeholder" || true)"
+    else
+      value="$(gum input --prompt "$prompt" || true)"
+    fi
+  elif [ -t 0 ]; then
+    read -r -p "$prompt" value || true
+  elif tty_readable; then
+    read -r -p "$prompt" value < /dev/tty || true
+  fi
+
+  printf '%s\n' "$value"
+}
+
+choose_menu_fallback() {
+  local header="$1"
+  shift
+  local -a options=("$@")
+  local idx answer
+
+  printf '%s\n' "$header" >&2
+  for (( idx=0; idx<${#options[@]}; idx++ )); do
+    printf '%d. %s\n' "$((idx + 1))" "${options[$idx]}" >&2
+  done
+
+  if [ -t 0 ]; then
+    read -r -p "Select number: " answer || return 1
+  elif tty_readable; then
+    read -r -p "Select number: " answer < /dev/tty || return 1
+  else
+    return 1
+  fi
+
+  if [[ "$answer" =~ ^[0-9]+$ ]] && [ "$answer" -ge 1 ] && [ "$answer" -le "${#options[@]}" ]; then
+    printf '%s\n' "${options[$((answer - 1))]}"
+    return 0
+  fi
+
+  return 1
+}
+
+choose_menu() {
+  local header="$1"
+  shift
+  if have_gum; then
+    if printf '%s\n' "$@" | gum choose --header "$header"; then
+      return 0
+    fi
+  fi
+  choose_menu_fallback "$header" "$@"
+}
+
+choose_filter() {
+  local header="$1"
+  shift
+  if have_gum; then
+    printf '%s\n' "$@" | gum filter --placeholder "$header"
+    return
+  fi
+  choose_menu_fallback "$header" "$@"
+}
+
+append_today_heading_if_missing() {
+  local today
+  today="$(today_heading)"
+  if ! grep -qx "## $today" "$QUESTION_FILE"; then
+    if [ -s "$QUESTION_FILE" ]; then
+      printf '\n' >> "$QUESTION_FILE"
+    fi
+    printf '## %s\n\n' "$today" >> "$QUESTION_FILE"
+  fi
+}
+
+append_entry() {
+  local state="$1"
+  local summary="$2"
+  local tags="$3"
+  local note="${4:-}"
+
+  ensure_store
+  append_today_heading_if_missing
+
+  printf -- '- [%s] %s' "$state" "$summary" >> "$QUESTION_FILE"
+  if [ -n "$tags" ]; then
+    printf ' %s' "$tags" >> "$QUESTION_FILE"
+  fi
+  printf '\n' >> "$QUESTION_FILE"
+  printf '  updated: %s\n' "$(now_stamp)" >> "$QUESTION_FILE"
+  if [ -n "$note" ]; then
+    printf '  note: %s\n' "$note" >> "$QUESTION_FILE"
+  fi
+}
+
+entries_stream() {
+  awk '
+    /^## / { section = substr($0, 4); next }
+    /^- \[[a-z]+\] / { print NR "\t" section "\t" $0 }
+  ' "$QUESTION_FILE"
+}
+
+entry_state_from_line() {
+  printf '%s\n' "$1" | sed -E 's/^- \[([a-z]+)\].*$/\1/'
+}
+
+entry_summary_from_line() {
+  printf '%s\n' "$1" | sed -E 's/^- \[[a-z]+\] (.*)$/\1/' | sed -E 's/ #[a-z0-9_-]+//g'
+}
+
+entry_tags_from_line() {
+  printf '%s\n' "$1" | grep -oE '#[a-z0-9_-]+' | tr '\n' ' ' | sed -E 's/[[:space:]]+$//'
+}
+
+select_entry() {
+  local mode="$1"
+  local query="${2:-}"
+  local -a lines=()
+  local -a labels=()
+  local line_no section raw state summary label selected
+
+  while IFS=$'\t' read -r line_no section raw; do
+    [ -n "$line_no" ] || continue
+    state="$(entry_state_from_line "$raw")"
+    case "$mode" in
+      all) ;;
+      "$state") ;;
+      *) continue ;;
+    esac
+    summary="$(entry_summary_from_line "$raw")"
+    if [ -n "$query" ]; then
+      case "$(printf '%s %s %s' "$section" "$raw" "$summary" | tr '[:upper:]' '[:lower:]')" in
+        *"$(printf '%s' "$query" | tr '[:upper:]' '[:lower:]')"*) ;;
+        *) continue ;;
+      esac
+    fi
+    label="${section:-undated} | [$state] $summary :: $line_no"
+    labels+=("$label")
+  done < <(entries_stream)
+
+  [ "${#labels[@]}" -gt 0 ] || return 1
+  selected="$(choose_filter "Select question" "${labels[@]}")" || return 1
+  printf '%s\n' "${selected##* :: }"
+}
+
+replace_line() {
+  local target="$1"
+  local new_line="$2"
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/question.XXXXXX")"
+  awk -v target="$target" -v replacement="$new_line" '
+    NR == target { print replacement; next }
+    { print }
+  ' "$QUESTION_FILE" > "$tmp"
+  mv "$tmp" "$QUESTION_FILE"
+}
+
+insert_after_line() {
+  local target="$1"
+  local inserted="$2"
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/question.XXXXXX")"
+  awk -v target="$target" -v inserted="$inserted" '
+    { print }
+    NR == target { print inserted }
+  ' "$QUESTION_FILE" > "$tmp"
+  mv "$tmp" "$QUESTION_FILE"
+}
+
+change_entry_state() {
+  local line_no="$1"
+  local new_state="$2"
+  local line
+  line="$(sed -n "${line_no}p" "$QUESTION_FILE")"
+  [ -n "$line" ] || return 1
+  line="$(printf '%s\n' "$line" | sed -E "s/^- \[[a-z]+\]/- [$new_state]/")"
+  replace_line "$line_no" "$line"
+}
+
+add_note_to_entry() {
+  local line_no="$1"
+  local note="$2"
+  [ -n "$note" ] || return 0
+  insert_after_line "$line_no" "  note: $note"
+  insert_after_line "$line_no" "  updated: $(now_stamp)"
+}
+
+review_entry() {
+  local line_no="$1"
+  local line summary state action note
+  line="$(sed -n "${line_no}p" "$QUESTION_FILE")"
+  [ -n "$line" ] || return 1
+  summary="$(entry_summary_from_line "$line")"
+  state="$(entry_state_from_line "$line")"
+
+  while true; do
+    action="$(choose_menu "[$state] $summary" \
+      "Mark open" \
+      "Mark next" \
+      "Mark waiting" \
+      "Mark parked" \
+      "Mark done" \
+      "Mark dropped" \
+      "Add note" \
+      "Open in editor" \
+      "Back")" || return 0
+    case "$action" in
+      "Mark open") change_entry_state "$line_no" "open" ;;
+      "Mark next") change_entry_state "$line_no" "next" ;;
+      "Mark waiting") change_entry_state "$line_no" "waiting" ;;
+      "Mark parked") change_entry_state "$line_no" "parked" ;;
+      "Mark done") change_entry_state "$line_no" "done" ;;
+      "Mark dropped") change_entry_state "$line_no" "dropped" ;;
+      "Add note")
+        note="$(prompt_input "Note: " "Follow-up, context, or next move")"
+        [ -n "$note" ] && add_note_to_entry "$line_no" "$note"
+        ;;
+      "Open in editor") open_in_editor "$QUESTION_FILE" "$line_no" ;;
+      "Back") return 0 ;;
+    esac
+    line="$(sed -n "${line_no}p" "$QUESTION_FILE")"
+    summary="$(entry_summary_from_line "$line")"
+    state="$(entry_state_from_line "$line")"
+  done
+}
+
+capture_flow() {
+  local summary state tags note next_action
+  summary="$(prompt_input "What are you trying not to lose? " "Question, task, loose end, idea")"
+  [ -n "$summary" ] || return 0
+  state="$(choose_menu "Save as" "open" "next" "waiting" "parked" "done" "dropped")" || state="$QUESTION_DEFAULT_STATE"
+  tags="$(normalize_tags "$(prompt_input "Tags: " "zed auth linux")")"
+  note="$(prompt_input "Optional note: " "More context, constraint, or follow-up")"
+  append_entry "$(normalize_state "$state")" "$summary" "$tags" "$note"
+
+  while true; do
+    next_action="$(choose_menu "Saved" "Capture another" "Review today's" "Open file" "Done")" || return 0
+    case "$next_action" in
+      "Capture another") capture_flow; return 0 ;;
+      "Review today's") review_flow "all" "$(today_heading)"; return 0 ;;
+      "Open file") open_in_editor "$QUESTION_FILE" ;;
+      "Done") return 0 ;;
+    esac
+  done
+}
+
+review_flow() {
+  local mode="${1:-}"
+  local query="${2:-}"
+  local line_no
+  ensure_store
+
+  if [ -z "$mode" ]; then
+    mode="$(choose_menu "Review which set?" "open" "next" "waiting" "parked" "done" "dropped" "all" "Back")" || return 0
+    [ "$mode" = "Back" ] && return 0
+  fi
+
+  line_no="$(select_entry "$mode" "$query")" || {
+    printf 'No matching questions.\n' >&2
+    return 1
+  }
+  review_entry "$line_no"
+}
+
+find_flow() {
+  local query
+  query="${*:-}"
+  if [ -z "$query" ]; then
+    query="$(prompt_input "Find: " "zed auth termux docs")"
+  fi
+  [ -n "$query" ] || return 0
+  review_flow "all" "$query"
+}
+
+tags_flow() {
+  local -a tags=()
+  local selected line_no
+  ensure_store
+  while IFS= read -r selected; do
+    [ -n "$selected" ] && tags+=("$selected")
+  done < <(grep -oE '#[a-z0-9_-]+' "$QUESTION_FILE" | sort -u)
+
+  [ "${#tags[@]}" -gt 0 ] || {
+    printf 'No tags found.\n' >&2
+    return 1
+  }
+
+  selected="$(choose_filter "Select tag" "${tags[@]}")" || return 0
+  line_no="$(select_entry "all" "$selected")" || return 1
+  review_entry "$line_no"
+}
+
+today_flow() {
+  ensure_store
+  if grep -qx "## $(today_heading)" "$QUESTION_FILE"; then
+    review_flow "all" "$(today_heading)" || open_in_editor "$QUESTION_FILE"
+    return
+  fi
+  open_in_editor "$QUESTION_FILE"
+}
+
+doctor() {
+  ensure_store
+  printf 'question file: %s\n' "$QUESTION_FILE"
+  printf 'editor: %s\n' "$(pick_editor)"
+  printf 'gum: %s\n' "$(command -v gum >/dev/null 2>&1 && echo yes || echo no)"
+  printf 'entries: %s\n' "$(entries_stream | wc -l | awk '{print $1}')"
+}
+
+show_path() {
+  printf '%s\n' "$QUESTION_FILE"
+}
+
+launcher() {
+  local action
+  while true; do
+    action="$(choose_menu "question" \
+      "Capture" \
+      "Review" \
+      "Find" \
+      "Today" \
+      "Tags" \
+      "Change state" \
+      "Open file" \
+      "Path" \
+      "Doctor" \
+      "Done")" || return 0
+    case "$action" in
+      "Capture") capture_flow ;;
+      "Review") review_flow ;;
+      "Find") find_flow ;;
+      "Today") today_flow ;;
+      "Tags") tags_flow ;;
+      "Change state") review_flow "all" ;;
+      "Open file") open_in_editor "$QUESTION_FILE" ;;
+      "Path") show_path ;;
+      "Doctor") doctor ;;
+      "Done") return 0 ;;
+    esac
+  done
+}
+
+usage() {
+  cat <<'EOF'
+question: shell-native question and scratchpad helper
+
+Usage:
+  question
+  question add [text...]
+  question review [state]
+  question find [query...]
+  question today
+  question tags
+  question open
+  question path
+  question doctor
+
+States:
+  open, next, waiting, parked, done, dropped
+EOF
+}
+
+main() {
+  ensure_store
+
+  case "${1:-}" in
+    "")
+      if [ "$QUESTION_MENU_ON_EMPTY" = "1" ]; then
+        launcher
+      else
+        capture_flow
+      fi
+      ;;
+    add)
+      shift
+      if [ "$#" -gt 0 ]; then
+        append_entry "$(normalize_state "$QUESTION_DEFAULT_STATE")" "$*" "" ""
+      else
+        capture_flow
+      fi
+      ;;
+    review)
+      shift
+      review_flow "${1:-}"
+      ;;
+    find|grep|search)
+      shift
+      find_flow "$*"
+      ;;
+    today)
+      today_flow
+      ;;
+    tags)
+      tags_flow
+      ;;
+    open)
+      open_in_editor "$QUESTION_FILE"
+      ;;
+    path)
+      show_path
+      ;;
+    doctor)
+      doctor
+      ;;
+    help|-h|--help)
+      usage
+      ;;
+    *)
+      append_entry "$(normalize_state "$QUESTION_DEFAULT_STATE")" "$*" "" ""
+      ;;
+  esac
+}
+
+main "$@"

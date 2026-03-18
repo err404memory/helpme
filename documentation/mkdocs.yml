@@ -32,3 +32,6 @@ nav:
   - Home: index.md
   - helpme shell:
       - Overview: helpme-shell/index.md
+  - question shell:
+      - Overview: question-shell/index.md
+      - Termux setup: question-shell/termux.md

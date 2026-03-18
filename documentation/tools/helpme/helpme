@@ -681,9 +681,9 @@ choose_config_file() {
     "helpme shell docs page"
     "helpme script"
     "helpme nav helper"
-    "helpme wrapper"
+    "Local launcher"
     "Alias file"
-    "Questions shell"
+    "helpme/question shell snippet"
     "Back"
     "Done"
   )
@@ -697,9 +697,9 @@ choose_config_file() {
       "helpme shell docs page") path="$DOCS_ROOT/helpme-shell/index.md" ;;
       "helpme script") path="$SCRIPT_DIR/helpme" ;;
       "helpme nav helper") path="$NAV_HELPER" ;;
-      "helpme wrapper") path="$HOME/.local/bin/helpme-private" ;;
+      "Local launcher") path="$HOME/.local/bin/helpme-local" ;;
       "Alias file") path="$HOME/.bashrc.d/30-aliases.sh" ;;
-      "Questions shell") path="$HOME/.bashrc.d/35-questions.sh" ;;
+      "helpme/question shell snippet") path="$HOME/.bashrc.d/35-helpme-question.sh" ;;
       "Back") return 0 ;;
       "Done") exit 0 ;;
     esac
