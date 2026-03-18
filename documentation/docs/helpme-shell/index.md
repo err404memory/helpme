@@ -40,7 +40,7 @@ The generic repo version is path-relative, so it can run from any checkout locat
 - Shared docs content: `documentation/docs`
 - Live-reload wrapper: `documentation/tools/mkdocs_live_server.py`
 
-`question` remains a separate shell, but it now has its own sibling docs page under `question shell`.
+`question` remains a separate shell, with its own docs page under `question shell`.
 
 ## Why this setup exists
 

@@ -34,7 +34,7 @@ question path
 question doctor
 ```
 
-For Termux wrapper setup from a local clone:
+For Termux launcher setup from a local clone:
 
 ```bash
 ./scripts/bootstrap-termux.sh

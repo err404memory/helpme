@@ -48,7 +48,7 @@ Run the CLI from the repo:
 documentation/tools/helpme/helpme
 ```
 
-Or point your own wrapper/alias at it.
+Or point your own launcher or alias at it.
 
 ## Bootstrap
 
@@ -74,13 +74,13 @@ That creates:
 - `~/.local/bin/question-local`
 - `~/.config/question-local/env`
 
-For a Termux-friendly setup that installs both wrappers and a shell snippet from one local clone:
+For a Termux-friendly setup that installs both launchers and a shell snippet from one local clone:
 
 ```bash
 ./scripts/bootstrap-termux.sh
 ```
 
-Then edit the env file, point it at your actual docs tree, and alias `helpme` to the wrapper if you want `helpme` available globally.
+Then edit the env file, point it at your actual docs tree, and alias `helpme` to the launcher if you want `helpme` available globally.
 
 ## Termux Installation
 
