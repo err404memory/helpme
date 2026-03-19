@@ -1,36 +1,150 @@
 # helpme
 
-`helpme` is a terminal-first editing shell for a MkDocs reference tree.
+`helpme` is a terminal-first shell for a structured Markdown notebook.
 
-`question` is a separate shell-native scratchpad helper for capture, review, and state changes over a Markdown questions file.
+It is for the things you solve once and do not want to rediscover later: commands, aliases, setup notes, troubleshooting steps, and other reference pages you want close at hand in the terminal.
 
+## Uses
 
-## Included
+- a personal command notebook
+- alias and shell-customization reference pages
+- personal reference notes
+- project documentation and runbooks
+- homelab or ops procedures
+- troubleshooting notes and command guides
+- internal team docs
+- research notes or long-lived markdown knowledge bases
 
-- `documentation/tools/helpme/helpme`
-- `documentation/tools/helpme/helpme_nav.rb`
-- `documentation/tools/helpme/README.md`
-- `documentation/tools/question/question`
-- `documentation/tools/question/README.md`
-- `documentation/tools/mkdocs_live_server.py`
-- `documentation/mkdocs.yml`
-- `documentation/docs/index.md`
-- `documentation/docs/helpme-shell/index.md`
-- `documentation/docs/question-shell/index.md`
-- `documentation/docs/javascripts/path-copy.js`
-- `documentation/docs/stylesheets/path-copy.css`
-- `docker-compose.yml`
+If your source of truth is a set of Markdown pages, `helpme` can provide the terminal workflow around that tree.
 
-## What it does
+## Features
 
-- browses your MkDocs nav with nested `gum` menus
+- browses a nav tree with nested `gum` menus
 - edits Markdown pages in `micro` or another terminal editor
 - jumps directly to Markdown headings
 - creates, moves, copies, renames, and deletes pages and groups
 - opens rendered docs pages and copies source paths or rendered URLs
-- serves docs with real live reload through a custom MkDocs wrapper
+- can work with an optional live preview service if you have one
 
-## Quick Start
+## Fit
+
+Best for:
+
+- a terminal-native notebook for commands and workflows
+- a structured place to keep “I solved this once already” knowledge
+- fast navigation between related markdown pages
+- something more personal and editable than manpages or app help output
+
+Less useful for:
+
+- a general notes app with no page structure
+- a GUI-first documentation tool
+- something that generates the content for you instead of helping you maintain it
+
+## Compatibility
+
+- **Primary target:** Linux shell environments
+- **Likely works:** macOS, WSL, Termux
+- **Not required:** any particular shell; `helpme` is a Bash script, not a terminal emulator plugin
+
+Needs:
+
+- `bash`
+- `ruby`
+- `gum` for the full interactive picker flow
+- `micro` or another terminal editor
+
+Without them:
+
+- without `gum`, `helpme` falls back to numbered prompts
+- without `micro`, set your preferred editor in your environment
+- if you only want to edit docs and not preview them, you do not need any preview service
+- if you want a persistent global command, use the bootstrap path instead of running the repo-local script directly
+
+## Structure
+
+`helpme` expects a docs root with:
+
+- a directory of Markdown pages
+- one navigation config file that defines page order and grouping
+- a consistent place to edit and maintain that content
+
+The exact nav file path is configurable in your launcher environment. You do not need to run any preview server or renderer to use the CLI itself.
+
+A minimal shape looks like this:
+
+```text
+my-docs/
+  documentation/
+    docs/
+      index.md
+      shell/
+        aliases.md
+        git.md
+      troubleshooting/
+        ssh.md
+    nav-config.yml
+```
+
+If you already keep structured Markdown pages somewhere, most of the setup is just pointing `helpme` at that tree.
+
+## Start
+
+Choose one path:
+
+1. **Install a local launcher for your own docs tree**
+Use this if you want `helpme` available globally against your own notebook.
+
+2. **Try it from this repo**
+Use this if you want to try `helpme` against the sample docs in this checkout.
+
+3. **Use Termux on Android**
+Use this only if you are setting it up inside Termux.
+
+## Launcher
+
+Use this if you want `helpme` to work against your own docs tree outside this checkout:
+
+```bash
+./scripts/bootstrap.sh
+```
+
+### Verify
+
+- `~/.local/bin/helpme-local path` prints the docs root you configured
+- `~/.local/bin/helpme-local` opens the menu
+- opening a page edits the files from your configured docs tree
+
+That creates:
+
+- `~/.local/bin/helpme-local`
+- `~/.config/helpme-local/env`
+
+Then edit the env file so it points at your real docs tree.
+
+If you want `helpme` available globally, add your own alias or shell function pointing at `helpme-local`.
+
+This is the most generic path. It does not assume you use anything else in this repo.
+
+## Repo
+
+Run the CLI directly from the repo:
+
+```bash
+documentation/tools/helpme/helpme
+```
+
+### Verify
+
+- the `helpme` menu opens
+- you can browse the docs nav
+- `documentation/tools/helpme/helpme path` resolves to this repo's docs tree
+
+You can evaluate the notebook shell without any preview service at all.
+
+## Preview
+
+If you want a browser preview while testing this repo, you can start the included example service:
 
 ```bash
 docker compose up -d docs
@@ -42,49 +156,11 @@ Then open:
 http://127.0.0.1:18101/
 ```
 
-Run the CLI from the repo:
+This preview service is optional. The core CLI does not depend on it.
 
-```bash
-documentation/tools/helpme/helpme
-```
+## Termux
 
-Or point your own launcher or alias at it.
-
-## Bootstrap
-
-If you want a local launcher plus an env file for your real docs tree:
-
-```bash
-./scripts/bootstrap.sh
-```
-
-That creates:
-
-- `~/.local/bin/helpme-local`
-- `~/.config/helpme-local/env`
-
-For the scratchpad shell:
-
-```bash
-./scripts/bootstrap-question.sh
-```
-
-That creates:
-
-- `~/.local/bin/question-local`
-- `~/.config/question-local/env`
-
-For a Termux-friendly setup that installs both launchers and a shell snippet from one local clone:
-
-```bash
-./scripts/bootstrap-termux.sh
-```
-
-Then edit the env file, point it at your actual docs tree, and alias `helpme` to the launcher if you want `helpme` available globally.
-
-## Termux Installation
-
-This is the clean setup flow for a fresh Android device in Termux.
+This is the setup flow for a fresh Android device in Termux.
 
 ### 1. Install packages
 
@@ -113,7 +189,7 @@ if [ -d "$HOME/.bashrc.d" ]; then
 fi
 ```
 
-### 4. Bootstrap both shell helpers
+### 4. Bootstrap the launcher
 
 ```bash
 ./scripts/bootstrap-termux.sh
@@ -122,37 +198,39 @@ fi
 That creates:
 
 - `~/.local/bin/helpme-local`
-- `~/.local/bin/question-local`
-- `~/.bashrc.d/35-helpme-question.sh`
+- `~/.bashrc.d/35-helpme.sh`
 - `~/.config/helpme-local/env`
-- `~/.config/question-local/env`
 
 ### 5. Reload and verify
 
 ```bash
 source "$HOME/.bashrc"
 type helpme
-type question
-question doctor
+helpme path
 ```
 
-### 6. Start using `question`
+### 6. Start
 
-```bash
-question
-question add "first capture from android"
-question today
-```
+Success criteria:
 
-By default, `question` uses:
+- `type helpme` resolves
+- `helpme path` prints the configured docs root
+- `helpme` opens the notebook menu
 
-```text
-$HOME/.config/question/questions.md
-```
+If you want browser preview later, you can add it separately. The Termux path does not depend on it.
 
-You can later point `QUESTION_FILE` somewhere else in `~/.config/question-local/env` if you want a different canonical scratchpad location.
+## Layout
 
-## Public Safety Check
+- `documentation/tools/helpme/helpme`
+- `documentation/tools/helpme/helpme_nav.rb`
+- `documentation/tools/helpme/README.md`
+- `documentation/docs/index.md`
+- `documentation/docs/helpme-shell/index.md`
+- `documentation/docs/javascripts/path-copy.js`
+- `documentation/docs/stylesheets/path-copy.css`
+- `docker-compose.yml`
+
+## Audit
 
 Run the repo audit before publishing or opening a PR:
 
@@ -166,17 +244,18 @@ If you want a local pre-commit guard for staged files:
 ./scripts/install-public-safety-hook.sh
 ```
 
-The audit scans for generic home-path leaks, SSH/scp-style host references, obvious secret-key markers, and suspicious local artifact filenames such as transcript dumps. If a match is intentional, add a path glob to `.public-safety-allowlist`. If you want the audit to catch your own machine names or local path fragments, put custom regex patterns in `.public-safety-local-patterns` and keep that file local only.
+The audit scans for generic home-path leaks, SSH/scp-style host references, obvious secret-key markers, and suspicious local artifact filenames such as transcript dumps. If a match is intentional, add a path glob to `.public-safety-allowlist`. If you want it to check for your own machine names or local path fragments, put custom regex patterns in `.public-safety-local-patterns` and keep that file local only.
 
-## Local Customization
+## Customization
 
-If you need remote renderer controls or machine-specific defaults, keep them in local environment files outside the repo.
+If you need preview-service controls, remote rendering, or machine-specific defaults, keep them in local environment files outside the repo.
+
+These integrations are optional. They are examples, not assumptions.
 
 Useful variables:
 
 ```bash
 HELPME_DOCS_ROOT
-HELPME_MKDOCS_FILE
 HELPME_HOMELAB_ROOT
 HELPME_DOCS_COMPOSE_FILE
 HELPME_SITE_URL

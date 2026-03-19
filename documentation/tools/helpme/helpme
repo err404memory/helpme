@@ -683,7 +683,7 @@ choose_config_file() {
     "helpme nav helper"
     "Local launcher"
     "Alias file"
-    "helpme/question shell snippet"
+    "helpme shell snippet"
     "Back"
     "Done"
   )
@@ -699,7 +699,7 @@ choose_config_file() {
       "helpme nav helper") path="$NAV_HELPER" ;;
       "Local launcher") path="$HOME/.local/bin/helpme-local" ;;
       "Alias file") path="$HOME/.bashrc.d/30-aliases.sh" ;;
-      "helpme/question shell snippet") path="$HOME/.bashrc.d/35-helpme-question.sh" ;;
+      "helpme shell snippet") path="$HOME/.bashrc.d/35-helpme.sh" ;;
       "Back") return 0 ;;
       "Done") exit 0 ;;
     esac

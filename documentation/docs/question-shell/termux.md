@@ -1,6 +1,6 @@
 # Termux setup
 
-This is the lightest supported way to make both `helpme` and `question` available from a Termux shell without hard-coding machine-specific paths.
+This is the lightest supported way to make `question` available from a Termux shell without hard-coding machine-specific paths.
 
 ## Assumptions
 
@@ -19,24 +19,24 @@ Example clone location:
 From the repo root:
 
 ```bash
-./scripts/bootstrap-termux.sh
+./scripts/bootstrap-question.sh
 ```
 
 That installs:
 
-- `~/.local/bin/helpme-local`
 - `~/.local/bin/question-local`
-- `~/.bashrc.d/35-helpme-question.sh`
-- `~/.config/helpme-local/env`
 - `~/.config/question-local/env`
 
-Reload your shell after that.
+Then add your own alias if you want `question` available globally:
+
+```bash
+alias question="$HOME/.local/bin/question-local"
+```
 
 ## What it does
 
-- adds `helpme` and `question` aliases through a shell snippet
-- keeps the repo copy as the public source of the scripts
-- keeps machine-specific overrides in local env files
+- keeps the repo copy as the public source of the script
+- keeps machine-specific overrides in a local env file
 
 ## Recommended question config
 
@@ -51,7 +51,6 @@ Later, if another scratchpad location becomes canonical, point `QUESTION_FILE` a
 ## Test
 
 ```bash
-type helpme
 type question
 question doctor
 question add "termux setup check"
@@ -60,6 +59,5 @@ question today
 
 ## Notes
 
-- `helpme` works against the repo checkout you cloned onto the phone.
-- `question` does not depend on the docs tree and can keep working even if the rendered docs are unavailable.
+- `question` does not depend on any docs tree and can keep working on its own.
 - The Android-specific picker backend is still a next step; for now `question` uses `gum` when available and a numbered fallback otherwise.

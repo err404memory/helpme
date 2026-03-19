@@ -1,6 +1,6 @@
 # helpme
 
-`helpme` is a terminal editing shell for the MkDocs reference tree in this repo.
+`helpme` is a terminal notebook shell for a structured Markdown reference tree.
 
 It gives you a fast keyboard-first workflow for:
 
@@ -8,17 +8,26 @@ It gives you a fast keyboard-first workflow for:
 - opening pages in `micro` or your preferred terminal editor
 - jumping directly to headings inside a page
 - creating, moving, copying, renaming, and deleting pages and groups
-- opening rendered pages and copying source paths or rendered URLs
+- opening preview pages and copying source paths or preview URLs
 
-The rendered side is handled by MkDocs. `helpme` is the editing and navigation layer over the same Markdown files.
+It is useful for command notes, aliases, runbooks, troubleshooting pages, and any other reference material you want to keep structured and easy to revisit from the terminal.
 
-## Source of Truth
+## Start
 
-- nav: `documentation/mkdocs.yml`
+Use one of these paths:
+
+1. run the repo-local script to try `helpme` against this checkout
+2. install a local launcher if you want to point it at your own docs tree
+
+If you are just evaluating the tool, start with the repo-local path first.
+
+## Source
+
+- nav config: `documentation/mkdocs.yml` (the nav file `helpme` reads today)
 - docs content: `documentation/docs/**/*.md`
 - helpme shell: `documentation/tools/helpme/helpme`
 - nav helper: `documentation/tools/helpme/helpme_nav.rb`
-- MkDocs live server wrapper: `documentation/tools/mkdocs_live_server.py`
+- optional live preview wrapper: `documentation/tools/mkdocs_live_server.py`
 
 ## Requirements
 
@@ -29,13 +38,28 @@ The rendered side is handled by MkDocs. `helpme` is the editing and navigation l
 
 Without `gum`, `helpme` falls back to numbered prompts.
 
-## Run
+## Compatibility
+
+- tested target: Linux shell environments
+- likely works: macOS, WSL, Termux
+- if `gum` is missing, use the numbered fallback prompts
+- if your editor is not `micro`, set a different editor in your environment
+- if you do not need preview, you do not need the Docker docs service
+
+## Repo
 
 From a shell that can see the repo:
 
 ```bash
-helpme
+documentation/tools/helpme/helpme
 ```
+
+### Verify
+
+- the `helpme` menu opens
+- `documentation/tools/helpme/helpme path` prints the docs root you expect
+
+## Launcher
 
 To install a local launcher plus env template:
 
@@ -56,11 +80,13 @@ helpme grep tmux
 helpme path
 ```
 
-## Local Customization
+The repo-local path is just a sample environment. The launcher path is the generic setup for your own notebook.
+
+## Customization
 
 The repo copy is intended to stay generic.
 
-If you need host-specific renderer settings, keep them outside the repo in your local launcher or env file. The default local launcher path used in this setup is:
+If you need host-specific preview settings, keep them outside the repo in your local launcher or env file. The default local launcher path used in this setup is:
 
 ```text
 ~/.local/bin/helpme-local
@@ -81,12 +107,10 @@ HELPME_REMOTE_DOCS_COMPOSE_FILE=/path/to/homelab/docker-compose.yml
 HELPME_SITE_URL=http://your-docs-host:18101
 ```
 
-## Live Reload
+## Preview
 
-The docs service uses `documentation/tools/mkdocs_live_server.py` instead of the plain `mkdocs serve` entrypoint. That wrapper uses MkDocs' `LiveReloadServer` directly with explicit watched paths so browser refresh works reliably for this mounted/shared setup.
+This repo includes an optional live preview wrapper at `documentation/tools/mkdocs_live_server.py`. If you use it, browser refresh stays reliable in this sample environment.
 
 ## Notes
 
-- `question` stays separate by design.
-- The sister shell for fast capture and triage now lives at `documentation/tools/question/question`.
 - The `pre-mvp-helpme` docs area is a stash of older topic notes that can be integrated gradually.
