@@ -177,19 +177,7 @@ git clone https://github.com/err404memory/helpme "$HOME/src/helpme"
 cd "$HOME/src/helpme"
 ```
 
-### 3. Make sure your shell loads `~/.bashrc.d/*.sh`
-
-If your `~/.bashrc` does not already do this, add:
-
-```bash
-if [ -d "$HOME/.bashrc.d" ]; then
-  for f in "$HOME/.bashrc.d"/*.sh; do
-    [ -r "$f" ] && . "$f"
-  done
-fi
-```
-
-### 4. Bootstrap the launcher
+### 3. Bootstrap the launcher
 
 ```bash
 ./scripts/bootstrap-termux.sh
@@ -201,7 +189,17 @@ That creates:
 - `~/.bashrc.d/35-helpme.sh`
 - `~/.config/helpme-local/env`
 
-### 5. Reload and verify
+It also adds a `~/.bashrc.d/*.sh` loader to `~/.bashrc` if one is not already there, stops if `ruby` is missing, and lists any optional packages you have not installed.
+
+For copying paths and opening preview URLs from the menu, install `termux-api` and the Termux:API Android app:
+
+```bash
+pkg install -y termux-api
+```
+
+Without it, `helpme` prints the path or URL instead.
+
+### 4. Reload and verify
 
 ```bash
 source "$HOME/.bashrc"
@@ -209,7 +207,7 @@ type helpme
 helpme path
 ```
 
-### 6. Start
+### 5. Start
 
 Success criteria:
 

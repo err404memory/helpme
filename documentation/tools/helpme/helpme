@@ -9,14 +9,18 @@ NAV_HELPER="${HELPME_NAV_HELPER:-$SCRIPT_DIR/helpme_nav.rb}"
 DOCS_ROOT="${HELPME_DOCS_ROOT:-$DOCUMENTATION_ROOT/docs}"
 MKDOCS_FILE="${HELPME_MKDOCS_FILE:-$DOCUMENTATION_ROOT/mkdocs.yml}"
 SITE_URL="${HELPME_SITE_URL:-}"
-DEBUG_LOG="${HELPME_DEBUG_LOG:-/tmp/helpme-debug.log}"
+TMP_ROOT="${TMPDIR:-/tmp}"
+DEBUG_LOG="${HELPME_DEBUG_LOG:-$TMP_ROOT/helpme-debug.log}"
 HOMELAB_ROOT="${HELPME_HOMELAB_ROOT:-$REPO_ROOT}"
 DOCS_COMPOSE_FILE="${HELPME_DOCS_COMPOSE_FILE:-$HOMELAB_ROOT/docker-compose.yml}"
 DOCS_RENDER_ADDR="${HELPME_RENDER_ADDR:-127.0.0.1:18101}"
-DOCS_RENDER_LOG="${HELPME_RENDER_LOG:-/tmp/helpme-mkdocs.log}"
+DOCS_RENDER_LOG="${HELPME_RENDER_LOG:-$TMP_ROOT/helpme-mkdocs.log}"
 REMOTE_RENDER_HOST="${HELPME_REMOTE_RENDER_HOST:-}"
 REMOTE_HOMELAB_ROOT="${HELPME_REMOTE_HOMELAB_ROOT:-}"
 REMOTE_DOCS_COMPOSE_FILE="${HELPME_REMOTE_DOCS_COMPOSE_FILE:-}"
+LAUNCHER_FILE="${HELPME_LAUNCHER_FILE:-$HOME/.local/bin/helpme-local}"
+ALIAS_FILE="${HELPME_ALIAS_FILE:-}"
+SHELL_SNIPPET_FILE="${HELPME_SHELL_SNIPPET:-$HOME/.bashrc.d/35-helpme.sh}"
 
 declare -A NODE_PARENT=()
 declare -A NODE_TYPE=()
@@ -75,6 +79,7 @@ clear_stale_micro_backup() {
   local path="$1"
   local backup
   backup="$(micro_backup_path "$path")"
+  command -v pgrep >/dev/null 2>&1 || return 0
   if [ -f "$backup" ] && ! pgrep -x micro >/dev/null 2>&1; then
     rm -f "$backup"
   fi
@@ -257,6 +262,16 @@ copy_clipboard() {
     printf 'Copied.\n'
     return
   fi
+  if command -v termux-clipboard-set >/dev/null 2>&1; then
+    printf '%s' "$value" | termux-clipboard-set
+    printf 'Copied.\n'
+    return
+  fi
+  if command -v pbcopy >/dev/null 2>&1; then
+    printf '%s' "$value" | pbcopy
+    printf 'Copied.\n'
+    return
+  fi
   printf '%s\n' "$value"
 }
 
@@ -264,6 +279,16 @@ open_url() {
   local url="$1"
   if command -v xdg-open >/dev/null 2>&1; then
     xdg-open "$url" >/dev/null 2>&1 &
+    printf 'Opened: %s\n' "$url"
+    return
+  fi
+  if command -v termux-open-url >/dev/null 2>&1; then
+    termux-open-url "$url" >/dev/null 2>&1
+    printf 'Opened: %s\n' "$url"
+    return
+  fi
+  if [ "$(uname -s 2>/dev/null)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
+    open "$url" >/dev/null 2>&1
     printf 'Opened: %s\n' "$url"
     return
   fi
@@ -697,12 +722,17 @@ choose_config_file() {
       "helpme shell docs page") path="$DOCS_ROOT/helpme-shell/index.md" ;;
       "helpme script") path="$SCRIPT_DIR/helpme" ;;
       "helpme nav helper") path="$NAV_HELPER" ;;
-      "Local launcher") path="$HOME/.local/bin/helpme-local" ;;
-      "Alias file") path="$HOME/.bashrc.d/30-aliases.sh" ;;
-      "helpme shell snippet") path="$HOME/.bashrc.d/35-helpme.sh" ;;
+      "Local launcher") path="$LAUNCHER_FILE" ;;
+      "Alias file") path="$ALIAS_FILE" ;;
+      "helpme shell snippet") path="$SHELL_SNIPPET_FILE" ;;
       "Back") return 0 ;;
       "Done") exit 0 ;;
     esac
+
+    if [ -z "$path" ] || [ ! -e "$path" ]; then
+      printf 'Not found on this machine: %s\n' "${path:-(not configured)}" >&2
+      continue
+    fi
 
     "$(_pick_or_default_editor)" "$path"
     maybe_nudge_renderer_for_path "$path"

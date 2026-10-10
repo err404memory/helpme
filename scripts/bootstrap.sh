@@ -17,6 +17,7 @@ set -euo pipefail
 
 PUBLIC_HELPME="\${HELPME_PUBLIC_BIN:-$PUBLIC_BIN}"
 LOCAL_ENV_FILE="\${HELPME_LOCAL_ENV_FILE:-$LOCAL_ENV_FILE}"
+export HELPME_LAUNCHER_FILE="\${HELPME_LAUNCHER_FILE:-$INSTALL_BIN}"
 
 if [ ! -r "\$PUBLIC_HELPME" ]; then
   echo "Public helpme not found or not readable: \$PUBLIC_HELPME" >&2
@@ -24,7 +25,7 @@ if [ ! -r "\$PUBLIC_HELPME" ]; then
 fi
 
 if [ -f "\$LOCAL_ENV_FILE" ]; then
-  mode="\$(stat -c '%a' "\$LOCAL_ENV_FILE" 2>/dev/null || true)"
+  mode="\$(stat -c '%a' "\$LOCAL_ENV_FILE" 2>/dev/null || stat -f '%Lp' "\$LOCAL_ENV_FILE" 2>/dev/null || true)"
   if [ -n "\$mode" ] && [ "\$mode" -gt 600 ]; then
     echo "Refusing to load \$LOCAL_ENV_FILE (permissions too open: \$mode)." >&2
     echo "Run: chmod 600 \$LOCAL_ENV_FILE" >&2
@@ -66,6 +67,10 @@ write_env_template() {
 
 # Optional editor override
 # HELPME_EDITOR="micro"
+
+# Optional files shown in the helpme config menu.
+# HELPME_ALIAS_FILE="$HOME/.bashrc.d/30-aliases.sh"
+# HELPME_SHELL_SNIPPET="$HOME/.bashrc.d/35-helpme.sh"
 EOF
 
   chmod 600 "$LOCAL_ENV_FILE"
@@ -81,9 +86,8 @@ Next steps:
   1. Edit $LOCAL_ENV_FILE
   2. Add this to your shell if needed:
      alias helpme='$INSTALL_BIN'
-  3. Start the docs renderer:
-     cd $REPO_ROOT
-     docker compose up -d docs
+  3. Optional docs preview (needs docker or mkdocs):
+     helpme start renderer
 EOF
 }
 
